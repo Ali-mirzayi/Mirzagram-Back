@@ -77,6 +77,13 @@ socketIO.on("connection", (socket) => {
 		socket.join(chatRooms.find(e => e.id === roomId)?.id);
 	});
 
+	socket.on("joinInRooms", (userId) => {
+		let result = chatRooms.filter(e => e.users[0]._id !== userId || e.users[1]._id !== userId);
+		result.forEach(e => {
+			socket.join(e.id);
+		});
+	});
+
 	socket.on('sendMessage', (data) => {
 		socket.to(data.roomId).emit('chatNewMessage', data);
 	});
@@ -153,35 +160,16 @@ socketIO.on("connection", (socket) => {
 		}
 	});
 
-	socket.on('recivedMessage', ({ messageId, roomId, contact, contactId }) => {
-		const contactSocketId = onlineUsers?.find(e => e.userId === contactId).socketId;
-		socketIO.to(contactSocketId).emit('recivedMessage', { messageId, contact, roomId });
+	socket.on('recivedMessage', ({ messageId, roomId, contact, userId }) => {
+		// contactSocketId should be true to emit recivedMessage and back to self
+		const contactSocketId = onlineUsers?.find(e => e.userId === userId)?.socketId;
+		socketIO.to(contactSocketId).emit('recivedMessageResponse', { messageId, contact, roomId });
 	});
 
 	socket.on("findUser", (name) => {
 		const { user, search } = name;
 		let result = users.filter(e => e.name.toLocaleLowerCase().includes(search)).filter(e => e.name !== user.name);
 		socket.emit('findUser', result);
-	});
-
-	socket.on("createRoom", async ({ user, contact }) => {
-		const firstName = user._id;
-		const secondName = contact._id;
-		if (!!chatRooms.find(e => e.users[0]._id === firstName && e.users[1]._id === secondName || e.users[0]._id === secondName && e.users[1]._id === firstName)) {
-			return;
-		}
-		const id = generateID();
-		const newRoom = { id: id, users: [user, contact], messages: [] };
-		chatRooms.unshift(newRoom);
-		socket.join(id);
-
-		socket.emit("createRoomResponse", { newRoom, contact });
-
-		const contactSocket = onlineUsers.find(user => user.userId === secondName)?.socket;
-
-		if (contactSocket) {
-			contactSocket.join(id);
-		};
 	});
 
 	socket.on("findRoom", (names) => {
@@ -206,7 +194,7 @@ socketIO.on("connection", (socket) => {
 
 			socket.emit("createRoomResponse", { newRoom, contact });
 		} else {
-			socket.emit("findRoomResponse", { result, contact });
+			socket.emit("createRoomResponse", { newRoom: result, contact });
 		}
 	});
 
@@ -223,6 +211,19 @@ socketIO.on("connection", (socket) => {
 		socketIO.emit('userConnected', onlineUsers.map(e => e.userId));
 		let result = chatRooms.filter(e => e.users[0]._id !== userId || e.users[1]._id !== userId);
 		result.forEach(e => {
+			socket.join(e.id);
+		});
+	});
+
+	socket.on("setUserConnected", ({ userId, cleanRoom }) => {
+		const remainingRooms = cleanRoom.filter(newRoom =>
+			!chatRooms.some(chatRoom => chatRoom.id === newRoom.id)
+		);
+		chatRooms = [...chatRooms, ...remainingRooms];
+		onlineUsers.unshift({ 'socketId': socket.id, 'socket': socket, 'userId': userId, 'userRoomId': undefined });
+		onlineUsers = uniq(onlineUsers, 'userId');
+		socketIO.emit('userConnected', onlineUsers.map(e => e.userId));
+		cleanRoom.forEach(e => {
 			socket.join(e.id);
 		});
 	});
@@ -281,7 +282,7 @@ app.post("/sendPushNotifications", async (req, res) => {
 			title: user.name,
 			body: message,
 			ttl: 172800, //2d
-			priority: "normal",
+			priority: "high",
 			data: { user, roomId }
 		}]);
 		return res.status(200).json({ status: ticket[0].status })
